@@ -2,8 +2,9 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "mcp[cli]>=1.2.0",
+#   "mcp[cli]>=1.9.0",
 #   "httpx>=0.27",
+#   "pydantic>=2",
 # ]
 # ///
 """MCP server for driving a dev Airflow cluster over its REST API.
@@ -30,6 +31,7 @@ from urllib.parse import quote
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from pydantic import AliasChoices, BaseModel, Field
 
 mcp = FastMCP("airflow-dev")
 
@@ -145,31 +147,56 @@ def _raise(resp: httpx.Response) -> None:
     )
 
 
-def _summarize_run(run: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "dag_id": run.get("dag_id"),
-        "dag_run_id": run.get("dag_run_id") or run.get("run_id"),
-        "state": run.get("state"),
-        "run_type": run.get("run_type"),
-        "logical_date": run.get("logical_date") or run.get("execution_date"),
-        "start_date": run.get("start_date"),
-        "end_date": run.get("end_date"),
-        "note": run.get("note"),
-        "conf": run.get("conf"),
-    }
+class DagRunSummary(BaseModel):
+    """Condensed view of an Airflow DAG run.
+
+    Populated directly from the API response; extra fields are ignored. The
+    aliases absorb the AF2/AF3 naming differences (`run_id`/`execution_date`
+    vs. `dag_run_id`/`logical_date`).
+    """
+
+    dag_id: str | None = None
+    dag_run_id: str | None = Field(
+        default=None, validation_alias=AliasChoices("dag_run_id", "run_id")
+    )
+    state: str | None = None
+    run_type: str | None = None
+    logical_date: str | None = Field(
+        default=None, validation_alias=AliasChoices("logical_date", "execution_date")
+    )
+    start_date: str | None = None
+    end_date: str | None = None
+    note: str | None = None
+    conf: dict[str, Any] | None = None
 
 
-def _summarize_task(ti: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "task_id": ti.get("task_id"),
-        "state": ti.get("state"),
-        "try_number": ti.get("try_number"),
-        "map_index": ti.get("map_index"),
-        "operator": ti.get("operator"),
-        "start_date": ti.get("start_date"),
-        "end_date": ti.get("end_date"),
-        "duration": ti.get("duration"),
-    }
+class TaskInstanceSummary(BaseModel):
+    """Condensed view of a single task instance within a run."""
+
+    task_id: str | None = None
+    state: str | None = None
+    try_number: int | None = None
+    map_index: int | None = None
+    operator: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    duration: float | None = None
+
+
+class RunStatus(BaseModel):
+    """A DAG run plus, optionally, its task instances."""
+
+    run: DagRunSummary
+    tasks: list[TaskInstanceSummary] | None = None
+
+
+class TaskLogResult(BaseModel):
+    """Logs for one task instance attempt."""
+
+    content: str
+    truncated: bool
+    line_count: int
+    try_number: int
 
 
 @mcp.tool()
@@ -178,7 +205,7 @@ def trigger_dag(
     conf: dict[str, Any] | None = None,
     logical_date: str | None = None,
     note: str | None = None,
-) -> dict[str, Any]:
+) -> DagRunSummary:
     """Trigger a manual run of a DAG in the dev Airflow cluster.
 
     Args:
@@ -188,7 +215,7 @@ def trigger_dag(
         note: Optional human-readable note attached to the run.
 
     Returns:
-        Summary of the created DAG run, including `dag_run_id` needed for status/log lookups.
+        DagRunSummary for the created run, including `dag_run_id` needed for status/log lookups.
         Note: if the DAG is paused, the run is created in `queued` state but will not execute
         until the DAG is unpaused in the Airflow UI.
     """
@@ -203,7 +230,7 @@ def trigger_dag(
     with _client() as c:
         resp = c.post(f"{_api_prefix()}/dags/{quote(dag_id, safe='')}/dagRuns", json=body)
         _raise(resp)
-        return _summarize_run(resp.json())
+        return DagRunSummary.model_validate(resp.json())
 
 
 @mcp.tool()
@@ -211,7 +238,7 @@ def get_run_status(
     dag_id: str,
     run_id: str,
     include_tasks: bool = True,
-) -> dict[str, Any]:
+) -> RunStatus:
     """Get the state of a DAG run and (optionally) its task instances.
 
     Args:
@@ -221,8 +248,9 @@ def get_run_status(
         include_tasks: When True (default), also fetch per-task states.
 
     Returns:
-        Dict with `run` (run summary) and, if requested, `tasks` (list of task-instance
-        summaries: task_id, state, try_number, operator, start/end dates, duration, map_index).
+        RunStatus with `run` (a DagRunSummary) and, if requested, `tasks` (a list of
+        TaskInstanceSummary: task_id, state, try_number, operator, start/end dates,
+        duration, map_index). `tasks` is null when include_tasks is False.
     """
     prefix = _api_prefix()
     dag = quote(dag_id, safe="")
@@ -231,12 +259,15 @@ def get_run_status(
     with _client() as c:
         r = c.get(f"{prefix}/dags/{dag}/dagRuns/{run}")
         _raise(r)
-        out: dict[str, Any] = {"run": _summarize_run(r.json())}
+        status = RunStatus(run=DagRunSummary.model_validate(r.json()))
         if include_tasks:
             r2 = c.get(f"{prefix}/dags/{dag}/dagRuns/{run}/taskInstances")
             _raise(r2)
-            out["tasks"] = [_summarize_task(ti) for ti in r2.json().get("task_instances", [])]
-        return out
+            status.tasks = [
+                TaskInstanceSummary.model_validate(ti)
+                for ti in r2.json().get("task_instances", [])
+            ]
+        return status
 
 
 @mcp.tool()
@@ -247,7 +278,7 @@ def get_task_logs(
     try_number: int = 1,
     map_index: int = -1,
     tail_lines: int | None = 500,
-) -> dict[str, Any]:
+) -> TaskLogResult:
     """Fetch logs for a single task instance attempt.
 
     Args:
@@ -261,8 +292,8 @@ def get_task_logs(
             beware, large tasks can produce many MB of output that will blow up context.
 
     Returns:
-        Dict with `content` (log text), `truncated` (True if tailing dropped earlier lines),
-        `line_count` (lines returned), and `try_number` (echoed back).
+        TaskLogResult with `content` (log text), `truncated` (True if tailing dropped earlier
+        lines), `line_count` (lines returned), and `try_number` (echoed back).
     """
     prefix = _api_prefix()
     dag = quote(dag_id, safe="")
@@ -298,12 +329,12 @@ def get_task_logs(
             lines = lines[-tail_lines:]
             truncated = True
 
-        return {
-            "content": "\n".join(lines),
-            "truncated": truncated,
-            "line_count": len(lines),
-            "try_number": try_number,
-        }
+        return TaskLogResult(
+            content="\n".join(lines),
+            truncated=truncated,
+            line_count=len(lines),
+            try_number=try_number,
+        )
 
 
 def _check() -> int:
