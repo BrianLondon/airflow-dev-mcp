@@ -31,7 +31,7 @@ from urllib.parse import quote
 
 import httpx
 from mcp.server.fastmcp import FastMCP
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 mcp = FastMCP("airflow-dev")
 
@@ -199,6 +199,94 @@ class TaskLogResult(BaseModel):
     try_number: int
 
 
+class DagInfo(BaseModel):
+    """Registration-level view of a DAG (not a specific run)."""
+
+    dag_id: str | None = None
+    is_paused: bool | None = None
+    is_active: bool | None = None
+    has_import_errors: bool | None = None
+    fileloc: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+    next_dagrun: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("next_dagrun", "next_dagrun_logical_date"),
+    )
+    last_parsed_time: str | None = None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _flatten_tags(cls, v: Any) -> Any:
+        # Airflow returns tags as [{"name": "x"}, ...]; flatten to ["x", ...].
+        if isinstance(v, list):
+            return [t.get("name") if isinstance(t, dict) else t for t in v]
+        return v
+
+
+class DagList(BaseModel):
+    dags: list[DagInfo]
+    total_entries: int | None = None
+
+
+class ImportErrorInfo(BaseModel):
+    """A DAG parse failure recorded by the scheduler."""
+
+    import_error_id: int | None = None
+    timestamp: str | None = None
+    filename: str | None = None
+    stack_trace: str | None = None
+
+
+class ImportErrorList(BaseModel):
+    import_errors: list[ImportErrorInfo]
+    total_entries: int | None = None
+
+
+class DagRunList(BaseModel):
+    dag_runs: list[DagRunSummary]
+    total_entries: int | None = None
+
+
+class ClearResult(BaseModel):
+    """Result of a clearTaskInstances call."""
+
+    dry_run: bool
+    task_instances: list[TaskInstanceSummary]
+
+
+class VariableInfo(BaseModel):
+    key: str | None = None
+    value: str | None = None
+    description: str | None = None
+
+
+class VariableList(BaseModel):
+    variables: list[VariableInfo]
+    total_entries: int | None = None
+
+
+class ConnectionInfo(BaseModel):
+    """Connection metadata. The API never returns the password."""
+
+    connection_id: str | None = Field(
+        default=None, validation_alias=AliasChoices("connection_id", "conn_id")
+    )
+    conn_type: str | None = None
+    host: str | None = None
+    db_schema: str | None = Field(
+        default=None, validation_alias=AliasChoices("schema", "db_schema")
+    )
+    login: str | None = None
+    port: int | None = None
+    description: str | None = None
+
+
+class ConnectionList(BaseModel):
+    connections: list[ConnectionInfo]
+    total_entries: int | None = None
+
+
 @mcp.tool()
 def trigger_dag(
     dag_id: str,
@@ -335,6 +423,207 @@ def get_task_logs(
             line_count=len(lines),
             try_number=try_number,
         )
+
+
+@mcp.tool()
+def list_dags(
+    limit: int = 100,
+    offset: int = 0,
+    dag_id_pattern: str | None = None,
+    tags: list[str] | None = None,
+) -> DagList:
+    """List DAGs registered in the cluster with their paused / import-error flags.
+
+    Use this to confirm a DAG parsed and registered. Important: a DAG whose file fails
+    to import at module load does NOT appear here at all — call `get_import_errors` for that.
+
+    Args:
+        limit: Max DAGs to return (default 100).
+        offset: Pagination offset.
+        dag_id_pattern: Optional case-insensitive substring filter on dag_id.
+        tags: Optional list of tags; only DAGs carrying one of them are returned.
+
+    Returns:
+        DagList with `dags` (dag_id, is_paused, is_active, has_import_errors, fileloc,
+        description, tags, next_dagrun, last_parsed_time) and `total_entries`.
+    """
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if dag_id_pattern:
+        params["dag_id_pattern"] = dag_id_pattern
+    if tags:
+        params["tags"] = tags
+
+    with _client() as c:
+        r = c.get(f"{_api_prefix()}/dags", params=params)
+        _raise(r)
+        return DagList.model_validate(r.json())
+
+
+@mcp.tool()
+def get_import_errors(limit: int = 100, offset: int = 0) -> ImportErrorList:
+    """List DAG import errors (parse failures) recorded by the scheduler.
+
+    The primary debugging tool when a DAG you just wrote isn't showing up: a file that
+    raises at import time is recorded here with its filename and full traceback.
+
+    Args:
+        limit: Max errors to return (default 100).
+        offset: Pagination offset.
+
+    Returns:
+        ImportErrorList with `import_errors` (filename, stack_trace, timestamp,
+        import_error_id) and `total_entries`.
+    """
+    with _client() as c:
+        r = c.get(f"{_api_prefix()}/importErrors", params={"limit": limit, "offset": offset})
+        _raise(r)
+        return ImportErrorList.model_validate(r.json())
+
+
+@mcp.tool()
+def set_dag_paused(dag_id: str, paused: bool) -> DagInfo:
+    """Pause or unpause a DAG.
+
+    Locally, newly added DAGs are paused by default, so `trigger_dag` will queue a run
+    that never executes until the DAG is unpaused. Call this with paused=False to enable it.
+
+    Args:
+        dag_id: DAG identifier.
+        paused: True to pause, False to unpause.
+
+    Returns:
+        DagInfo reflecting the updated state.
+    """
+    with _client() as c:
+        r = c.patch(
+            f"{_api_prefix()}/dags/{quote(dag_id, safe='')}",
+            json={"is_paused": paused},
+        )
+        _raise(r)
+        return DagInfo.model_validate(r.json())
+
+
+@mcp.tool()
+def list_dag_runs(
+    dag_id: str,
+    limit: int = 25,
+    offset: int = 0,
+    state: list[str] | None = None,
+) -> DagRunList:
+    """List recent runs of a DAG — useful when you don't already hold a run_id.
+
+    Args:
+        dag_id: DAG identifier. Pass "~" to list runs across all DAGs.
+        limit: Max runs to return (default 25).
+        offset: Pagination offset.
+        state: Optional filter, e.g. ["running"], ["failed"], ["success", "queued"].
+
+    Returns:
+        DagRunList with `dag_runs` (each a DagRunSummary) and `total_entries`.
+    """
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if state:
+        params["state"] = state
+
+    with _client() as c:
+        r = c.get(f"{_api_prefix()}/dags/{quote(dag_id, safe='')}/dagRuns", params=params)
+        _raise(r)
+        return DagRunList.model_validate(r.json())
+
+
+@mcp.tool()
+def clear_task_instances(
+    dag_id: str,
+    dag_run_id: str | None = None,
+    task_ids: list[str] | None = None,
+    only_failed: bool = False,
+    reset_dag_runs: bool = True,
+    dry_run: bool = True,
+) -> ClearResult:
+    """Clear task instances so they re-run — the fast way to re-test a task after a fix.
+
+    Defaults to a DRY RUN: it reports which task instances *would* be cleared without
+    touching them. Pass dry_run=False to actually clear; with reset_dag_runs=True the
+    affected run is put back into a running state so cleared tasks re-execute.
+
+    Args:
+        dag_id: DAG identifier.
+        dag_run_id: Restrict to a single run (recommended). If omitted, the API's other
+            filters apply across runs.
+        task_ids: Restrict to specific task_ids. If omitted, all matching tasks are cleared.
+        only_failed: When True, only clear failed task instances.
+        reset_dag_runs: When True (default), set affected runs back to running so cleared
+            tasks are re-scheduled.
+        dry_run: When True (default), preview only. Set False to actually clear.
+
+    Returns:
+        ClearResult with `dry_run` (echoed) and `task_instances` (the affected TIs).
+    """
+    body: dict[str, Any] = {
+        "dry_run": dry_run,
+        "only_failed": only_failed,
+        "reset_dag_runs": reset_dag_runs,
+    }
+    if dag_run_id:
+        body["dag_run_id"] = dag_run_id
+    if task_ids:
+        body["task_ids"] = task_ids
+
+    with _client() as c:
+        r = c.post(
+            f"{_api_prefix()}/dags/{quote(dag_id, safe='')}/clearTaskInstances",
+            json=body,
+        )
+        _raise(r)
+        return ClearResult(
+            dry_run=dry_run,
+            task_instances=[
+                TaskInstanceSummary.model_validate(ti)
+                for ti in r.json().get("task_instances", [])
+            ],
+        )
+
+
+@mcp.tool()
+def list_variables(limit: int = 100, offset: int = 0) -> VariableList:
+    """List Airflow Variables (read-only) — handy when troubleshooting why a task can't
+    find config it expects.
+
+    Values flagged sensitive by Airflow's secrets masker come back masked. Read-only by
+    design: this tool cannot create or modify variables.
+
+    Args:
+        limit: Max variables to return (default 100).
+        offset: Pagination offset.
+
+    Returns:
+        VariableList with `variables` (key, value, description) and `total_entries`.
+    """
+    with _client() as c:
+        r = c.get(f"{_api_prefix()}/variables", params={"limit": limit, "offset": offset})
+        _raise(r)
+        return VariableList.model_validate(r.json())
+
+
+@mcp.tool()
+def list_connections(limit: int = 100, offset: int = 0) -> ConnectionList:
+    """List Airflow Connections (read-only) — passwords are never returned by the API.
+
+    Read-only by design: use it to confirm a connection exists with the expected
+    conn_type / host / schema when a task fails to connect.
+
+    Args:
+        limit: Max connections to return (default 100).
+        offset: Pagination offset.
+
+    Returns:
+        ConnectionList with `connections` (connection_id, conn_type, host, db_schema,
+        login, port, description) and `total_entries`.
+    """
+    with _client() as c:
+        r = c.get(f"{_api_prefix()}/connections", params={"limit": limit, "offset": offset})
+        _raise(r)
+        return ConnectionList.model_validate(r.json())
 
 
 def _check() -> int:
