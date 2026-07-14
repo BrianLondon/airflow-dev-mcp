@@ -16,14 +16,18 @@ variables. It works against both **Airflow 3.x** (`/api/v2`, the default) and
 ## Install & run
 
 The package ships a single console command, `airflow-dev-mcp`, which starts the MCP
-server on stdio. You rarely run it by hand — your MCP client launches it for you (see
-below). To try it directly, the zero-install option is [uv](https://docs.astral.sh/uv/):
+server on stdio. Installation requires [uv](https://docs.astral.sh/uv/):
+
+To download and validate the package run:
 
 ```bash
 uvx airflow-dev-mcp --check      # fetch + run a one-shot connectivity check
 ```
 
-Or install it as a persistent tool:
+It can be installed as a persistent tool but typical installation is to
+just have your coding agent call it through `uvx` (See: Configure your
+MCP client below). If you do want to install it system wide, use one of the 
+two following commands
 
 ```bash
 uv tool install airflow-dev-mcp
@@ -35,8 +39,8 @@ pipx install airflow-dev-mcp
 
 ### Claude Code
 
-Add the server to `~/.claude.json` (applies everywhere) or a project's
-`.claude/settings.json` (just that project):
+For most users all you should need to do is add the server to `~/.claude.json` 
+(applies everywhere) or a project's `.claude/settings.json` (just that project):
 
 ```json
 {
@@ -45,7 +49,7 @@ Add the server to `~/.claude.json` (applies everywhere) or a project's
       "command": "uvx",
       "args": ["airflow-dev-mcp"],
       "env": {
-        "AIRFLOW_URL": "http://localhost:8081",
+        "AIRFLOW_URL": "http://localhost:8080",
         "AIRFLOW_USERNAME": "admin",
         "AIRFLOW_PASSWORD": "admin"
       }
@@ -109,7 +113,7 @@ All configuration is via environment variables:
 The four `list_*` tools, `get_run_status`, `get_task_logs`, and `get_import_errors` are
 strictly read-only. `trigger_dag`, `set_dag_paused`, and `clear_task_instances` change
 cluster state. There are deliberately **no** tools that create or modify Variables or
-Connections — that's cluster administration, out of scope for a DAG-development helper.
+Connections.
 
 ### A typical loop
 
@@ -120,48 +124,6 @@ Connections — that's cluster administration, out of scope for a DAG-developmen
 5. `get_run_status(dag_id, run_id)` until it finishes.
 6. On failure, `get_task_logs(...)`; fix the code, then `clear_task_instances(dag_id,
    dag_run_id, dry_run=false)` to re-run just the affected tasks.
-
-## Approving tools once (Claude Code)
-
-Because each capability is its own MCP tool, Claude Code can remember your approval
-per tool — unlike shell `curl` calls, which re-prompt whenever the command string
-changes. When a tool first runs, choosing **"don't ask again"** persists an allow rule.
-You can also pre-approve tools in settings so they never prompt.
-
-A reasonable split is to allow the read-only tools and let the state-changing ones prompt.
-In `.claude/settings.json` (project) or `~/.claude/settings.json` (global):
-
-```json
-{
-  "permissions": {
-    "allow": [
-      "mcp__airflow-dev__list_dags",
-      "mcp__airflow-dev__get_run_status",
-      "mcp__airflow-dev__get_task_logs",
-      "mcp__airflow-dev__get_import_errors",
-      "mcp__airflow-dev__list_dag_runs",
-      "mcp__airflow-dev__list_variables",
-      "mcp__airflow-dev__list_connections"
-    ]
-  }
-}
-```
-
-Leaving `trigger_dag`, `set_dag_paused`, and `clear_task_instances` off the list means
-they still ask before acting.
-
-## Verifying your setup
-
-Before wiring it into an editor, confirm the URL and credentials work end-to-end:
-
-```bash
-AIRFLOW_URL=http://localhost:8081 \
-AIRFLOW_USERNAME=admin AIRFLOW_PASSWORD=admin \
-  uvx airflow-dev-mcp --check
-```
-
-It prints `OK — …` with the DAG count on success, or `FAIL — …` with the reason
-(wrong URL, auth failure, or an `/api/v1` vs `/api/v2` mismatch).
 
 ## Releasing (maintainers)
 
