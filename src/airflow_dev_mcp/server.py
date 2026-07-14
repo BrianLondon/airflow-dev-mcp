@@ -1,15 +1,7 @@
-#!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.11"
-# dependencies = [
-#   "mcp[cli]>=1.9.0",
-#   "httpx>=0.27",
-#   "pydantic>=2",
-# ]
-# ///
-"""MCP server for driving a dev Airflow cluster over its REST API.
+"""MCP server for driving a dev/local Airflow cluster over its REST API.
 
-Configure via environment variables:
+Configure entirely via environment variables:
+
     AIRFLOW_URL             Base URL, e.g. http://localhost:8081. Default: http://localhost:8080.
     AIRFLOW_API_PREFIX      REST API path prefix. Default: /api/v2 (Airflow 3.x). Use /api/v1 for AF2.
     AIRFLOW_USERNAME        Username (used with AIRFLOW_PASSWORD).
@@ -19,11 +11,8 @@ Configure via environment variables:
     AIRFLOW_TOKEN_ENDPOINT  Path to exchange creds for a JWT. Default: /auth/token.
     AIRFLOW_TIMEOUT         HTTP timeout in seconds. Default: 30.
     AIRFLOW_VERIFY_SSL      'false' to skip TLS verification. Default: true.
-
-Run:
-    uv run --script airflow_mcp.py           # stdio MCP server (for Claude Code)
-    uv run --script airflow_mcp.py --check   # one-shot connectivity check, then exit
 """
+
 import os
 import sys
 from typing import Any
@@ -31,7 +20,20 @@ from urllib.parse import quote
 
 import httpx
 from mcp.server.fastmcp import FastMCP
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+
+from airflow_dev_mcp.models import (
+    ClearResult,
+    ConnectionList,
+    DagInfo,
+    DagList,
+    DagRunList,
+    DagRunSummary,
+    ImportErrorList,
+    RunStatus,
+    TaskInstanceSummary,
+    TaskLogResult,
+    VariableList,
+)
 
 mcp = FastMCP("airflow-dev")
 
@@ -147,146 +149,6 @@ def _raise(resp: httpx.Response) -> None:
     )
 
 
-class DagRunSummary(BaseModel):
-    """Condensed view of an Airflow DAG run.
-
-    Populated directly from the API response; extra fields are ignored. The
-    aliases absorb the AF2/AF3 naming differences (`run_id`/`execution_date`
-    vs. `dag_run_id`/`logical_date`).
-    """
-
-    dag_id: str | None = None
-    dag_run_id: str | None = Field(
-        default=None, validation_alias=AliasChoices("dag_run_id", "run_id")
-    )
-    state: str | None = None
-    run_type: str | None = None
-    logical_date: str | None = Field(
-        default=None, validation_alias=AliasChoices("logical_date", "execution_date")
-    )
-    start_date: str | None = None
-    end_date: str | None = None
-    note: str | None = None
-    conf: dict[str, Any] | None = None
-
-
-class TaskInstanceSummary(BaseModel):
-    """Condensed view of a single task instance within a run."""
-
-    task_id: str | None = None
-    state: str | None = None
-    try_number: int | None = None
-    map_index: int | None = None
-    operator: str | None = None
-    start_date: str | None = None
-    end_date: str | None = None
-    duration: float | None = None
-
-
-class RunStatus(BaseModel):
-    """A DAG run plus, optionally, its task instances."""
-
-    run: DagRunSummary
-    tasks: list[TaskInstanceSummary] | None = None
-
-
-class TaskLogResult(BaseModel):
-    """Logs for one task instance attempt."""
-
-    content: str
-    truncated: bool
-    line_count: int
-    try_number: int
-
-
-class DagInfo(BaseModel):
-    """Registration-level view of a DAG (not a specific run)."""
-
-    dag_id: str | None = None
-    is_paused: bool | None = None
-    is_active: bool | None = None
-    has_import_errors: bool | None = None
-    fileloc: str | None = None
-    description: str | None = None
-    tags: list[str] | None = None
-    next_dagrun: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("next_dagrun", "next_dagrun_logical_date"),
-    )
-    last_parsed_time: str | None = None
-
-    @field_validator("tags", mode="before")
-    @classmethod
-    def _flatten_tags(cls, v: Any) -> Any:
-        # Airflow returns tags as [{"name": "x"}, ...]; flatten to ["x", ...].
-        if isinstance(v, list):
-            return [t.get("name") if isinstance(t, dict) else t for t in v]
-        return v
-
-
-class DagList(BaseModel):
-    dags: list[DagInfo]
-    total_entries: int | None = None
-
-
-class ImportErrorInfo(BaseModel):
-    """A DAG parse failure recorded by the scheduler."""
-
-    import_error_id: int | None = None
-    timestamp: str | None = None
-    filename: str | None = None
-    stack_trace: str | None = None
-
-
-class ImportErrorList(BaseModel):
-    import_errors: list[ImportErrorInfo]
-    total_entries: int | None = None
-
-
-class DagRunList(BaseModel):
-    dag_runs: list[DagRunSummary]
-    total_entries: int | None = None
-
-
-class ClearResult(BaseModel):
-    """Result of a clearTaskInstances call."""
-
-    dry_run: bool
-    task_instances: list[TaskInstanceSummary]
-
-
-class VariableInfo(BaseModel):
-    key: str | None = None
-    value: str | None = None
-    description: str | None = None
-
-
-class VariableList(BaseModel):
-    variables: list[VariableInfo]
-    total_entries: int | None = None
-
-
-class ConnectionInfo(BaseModel):
-    """Connection metadata. The API never returns the password."""
-
-    connection_id: str | None = Field(
-        default=None, validation_alias=AliasChoices("connection_id", "conn_id")
-    )
-    conn_type: str | None = None
-    host: str | None = None
-    db_schema: str | None = Field(
-        default=None, validation_alias=AliasChoices("schema", "db_schema")
-    )
-    login: str | None = None
-    port: int | None = None
-    description: str | None = None
-
-
-class ConnectionList(BaseModel):
-    connections: list[ConnectionInfo]
-    total_entries: int | None = None
-
-
 @mcp.tool()
 def trigger_dag(
     dag_id: str,
@@ -305,7 +167,7 @@ def trigger_dag(
     Returns:
         DagRunSummary for the created run, including `dag_run_id` needed for status/log lookups.
         Note: if the DAG is paused, the run is created in `queued` state but will not execute
-        until the DAG is unpaused in the Airflow UI.
+        until the DAG is unpaused (see `set_dag_paused`).
     """
     body: dict[str, Any] = {}
     if conf is not None:
@@ -627,7 +489,7 @@ def list_connections(limit: int = 100, offset: int = 0) -> ConnectionList:
 
 
 def _check() -> int:
-    """One-shot connectivity check for debugging outside Claude Code."""
+    """One-shot connectivity check for debugging outside an MCP client."""
     try:
         with _client() as c:
             r = c.get(f"{_api_prefix()}/dags", params={"limit": 1})
@@ -641,7 +503,12 @@ def _check() -> int:
         return 1
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Console entry point. Runs the stdio MCP server, or `--check` connectivity test."""
     if "--check" in sys.argv:
-        sys.exit(_check())
+        raise SystemExit(_check())
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

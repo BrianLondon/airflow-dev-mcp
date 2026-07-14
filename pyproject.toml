@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "airflow-dev-mcp"
+dynamic = ["version"]
+description = "MCP server for driving a dev/local Airflow cluster over its REST API — trigger DAGs, check run/task status, fetch logs, and diagnose import errors from inside your MCP client."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Brian London", email = "brian@seatgeek.com" }]
+keywords = ["airflow", "mcp", "model-context-protocol", "claude", "dags", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Typing :: Typed",
+]
+dependencies = [
+    "mcp[cli]>=1.9.0",
+    "httpx>=0.27",
+    "pydantic>=2",
+]
+
+[project.scripts]
+airflow-dev-mcp = "airflow_dev_mcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/BrianLondon/airflow-dev-mcp"
+Repository = "https://github.com/BrianLondon/airflow-dev-mcp"
+Issues = "https://github.com/BrianLondon/airflow-dev-mcp/issues"
+
+[tool.hatch.version]
+path = "src/airflow_dev_mcp/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/airflow_dev_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/airflow_dev_mcp", "README.md", "LICENSE"]
