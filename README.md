@@ -41,8 +41,23 @@ pipx install airflow-dev-mcp
 
 ### Claude Code
 
-For most users all you should need to do is add the server to `~/.claude.json` 
-(applies everywhere) or a project's `.claude/settings.json` (just that project):
+The easiest way is the `claude mcp add` CLI, which writes the config to the correct
+place for you. From your project directory:
+
+```bash
+claude mcp add airflow-dev \
+  -e AIRFLOW_URL=http://localhost:8080 \
+  -e AIRFLOW_USERNAME=admin \
+  -e AIRFLOW_PASSWORD=admin \
+  -- uvx airflow-dev-mcp
+```
+
+Add `--scope user` to make it available in every project, or `--scope project` to write
+a checked-in `.mcp.json` you can commit for your team (the default scope is local to you
+in the current project).
+
+To configure it by hand instead, create a `.mcp.json` file in the project root — this
+is the file Claude Code reads for project-scoped MCP servers.
 
 ```json
 {
@@ -60,12 +75,7 @@ For most users all you should need to do is add the server to `~/.claude.json`
 }
 ```
 
-Using `uvx` means you don't have to manage a virtualenv — it fetches and caches the
-package on first launch. If you'd rather pin an installed copy, replace the command with
-`"command": "airflow-dev-mcp", "args": []` after `uv tool install`.
-
-Restart Claude Code. The tools show up namespaced as `mcp__airflow-dev__trigger_dag`,
-and so on.
+For a user-global setup, put the same `mcpServers` block in `~/.claude.json` instead.
 
 ### Other MCP clients
 
