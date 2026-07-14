@@ -2,7 +2,7 @@ name: Publish to PyPI
 
 # Publishes to PyPI via Trusted Publishing (OIDC) whenever a GitHub Release is
 # published. No API token is stored anywhere — PyPI verifies the workflow's
-# short-lived OIDC identity against a publisher you register once (see README).
+# short-lived OIDC identity against a publisher you register once (see RELEASING.md).
 
 on:
   release:

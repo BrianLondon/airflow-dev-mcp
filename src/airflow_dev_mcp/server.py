@@ -35,7 +35,25 @@ from airflow_dev_mcp.models import (
     VariableList,
 )
 
-mcp = FastMCP("airflow-dev")
+_INSTRUCTIONS = """\
+Tools for driving a development or local Airflow cluster over its REST API while \
+developing DAGs: trigger runs, inspect run/task status, read task logs, and diagnose \
+DAG parse errors.
+
+Typical development loop:
+1. After writing or editing a DAG file, call `list_dags` to confirm it registered. If \
+it's missing, call `get_import_errors` to see the parse traceback.
+2. New DAGs start paused, so call `set_dag_paused(dag_id, paused=false)` before triggering.
+3. Call `trigger_dag(dag_id, conf=...)` and keep the returned `dag_run_id`.
+4. Poll `get_run_status(dag_id, run_id)` until the run finishes.
+5. On failure, read `get_task_logs(...)`. After fixing the code, call \
+`clear_task_instances(dag_id, dag_run_id, dry_run=false)` to re-run just the affected \
+tasks instead of triggering a whole new run.
+
+`list_variables` and `list_connections` are read-only helpers for troubleshooting a \
+task's configuration."""
+
+mcp = FastMCP("airflow-dev", instructions=_INSTRUCTIONS)
 
 _token_cache: str | None = None
 
