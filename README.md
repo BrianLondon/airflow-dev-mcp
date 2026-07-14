@@ -1,24 +1,26 @@
 # airflow-dev-mcp
 
 An [MCP](https://modelcontextprotocol.io) server that lets an AI coding assistant
-(Claude Code, Cursor, and other MCP clients) drive a **development or local Airflow
-cluster** through its REST API — trigger DAG runs, watch their status, read task logs,
-and diagnose parse errors, without leaving your editor.
+(Claude Code, Cursor, and other MCP clients) drive a development or local Airflow
+cluster through Airflow's REST API. It can trigger DAG runs, watch their status, read task logs,
+and diagnose parse errors.
 
 It talks to Airflow over HTTP only. There's no dependency on your Airflow source tree,
-no filesystem access, and no local config files — everything is set through environment
-variables. It works against both **Airflow 3.x** (`/api/v2`, the default) and
-**Airflow 2.x** (`/api/v1`).
+no filesystem or database access, and no local config files. All configuration is set through environment
+variables. It support both Airflow 3 (via `/api/v2`, the default) and
+Airflow 2 (`/api/v1`).
 
-> **Meant for dev/local clusters.** It's designed for the write-a-DAG / run-it / read-the-logs
-> loop against a throwaway environment. Pointing it at a production cluster is not recommended.
+> Airflow-dev-mcp is designed for the write-a-DAG / run-it / read-the-logs
+> loop against a development and/or local environment. Pointing it at a production cluster is not recommended.
 
 ## Install & run
 
 The package ships a single console command, `airflow-dev-mcp`, which starts the MCP
-server on stdio. Installation requires [uv](https://docs.astral.sh/uv/):
+server on stdio. Installation requires [uv](https://docs.astral.sh/uv/).
 
-To download and validate the package run:
+_Note: most users will skip this and just add it to their coding environment (See: below)
+
+To download and validate the package, run:
 
 ```bash
 uvx airflow-dev-mcp --check      # fetch + run a one-shot connectivity check
