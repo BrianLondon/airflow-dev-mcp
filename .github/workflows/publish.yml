@@ -1,0 +1,52 @@
+name: Publish to PyPI
+
+# Publishes to PyPI via Trusted Publishing (OIDC) whenever a GitHub Release is
+# published. No API token is stored anywhere — PyPI verifies the workflow's
+# short-lived OIDC identity against a publisher you register once (see README).
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Check metadata
+        run: uvx twine check dist/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # The environment name must match the one registered on PyPI as the trusted
+    # publisher, and lets you add manual approval / branch protections there.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/airflow-dev-mcp/
+    permissions:
+      id-token: write  # required for OIDC; this is what replaces the API token
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
