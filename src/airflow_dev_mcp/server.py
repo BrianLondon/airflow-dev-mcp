@@ -13,6 +13,7 @@ Configure entirely via environment variables:
     AIRFLOW_VERIFY_SSL      'false' to skip TLS verification. Default: true.
 """
 
+import json
 import os
 import sys
 from typing import Any
@@ -167,6 +168,37 @@ def _raise(resp: httpx.Response) -> None:
     )
 
 
+def _log_text_from_response(resp: httpx.Response) -> str:
+    """Extract log text from a get_log response.
+
+    Airflow 2 returns {"content": "<string>"}; Airflow 3 returns
+    {"content": [{"event": "<line>", ...}, ...]}. Non-JSON bodies are returned as-is.
+    """
+    if "application/json" not in resp.headers.get("content-type", ""):
+        return resp.text
+    try:
+        payload = resp.json()
+    except ValueError:
+        return resp.text
+
+    content = payload.get("content") if isinstance(payload, dict) else payload
+    if content is None:
+        return resp.text
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        lines = []
+        for item in content:
+            if isinstance(item, dict):
+                lines.append(item.get("event") or item.get("message") or json.dumps(item))
+            elif isinstance(item, (list, tuple)):
+                lines.append(str(item[-1]) if item else "")
+            else:
+                lines.append(str(item))
+        return "\n".join(lines)
+    return str(content)
+
+
 @mcp.tool()
 def trigger_dag(
     dag_id: str,
@@ -276,22 +308,11 @@ def get_task_logs(
         resp = c.get(
             f"{prefix}/dags/{dag}/dagRuns/{run}/taskInstances/{task}/logs/{try_number}",
             params=params,
-            headers={"Accept": "text/plain"},
+            headers={"Accept": "application/json"},
         )
         _raise(resp)
 
-        text = resp.text
-        ctype = resp.headers.get("content-type", "")
-        if "application/json" in ctype:
-            try:
-                j = resp.json()
-                if isinstance(j, dict) and "content" in j:
-                    content = j["content"]
-                    text = content if isinstance(content, str) else str(content)
-            except ValueError:
-                pass
-
-        lines = text.splitlines()
+        lines = _log_text_from_response(resp).splitlines()
         truncated = False
         if tail_lines is not None and len(lines) > tail_lines:
             lines = lines[-tail_lines:]
