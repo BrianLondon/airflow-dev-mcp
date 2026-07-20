@@ -102,8 +102,36 @@ def _exchange_jwt(user: str, pw: str) -> str | None:
     return j.get("access_token") or j.get("token") or j.get("jwt")
 
 
-def _resolve_auth() -> tuple[dict[str, str], httpx.BasicAuth | None]:
-    """Return (extra_headers, basic_auth) based on env vars.
+class _JwtAuth(httpx.Auth):
+    """Bearer auth that re-exchanges credentials for a fresh JWT when the server
+    rejects the cached token with 401.
+
+    Airflow JWTs expire (24h by default), so a long-lived session would otherwise
+    start failing every request until the MCP server was restarted. On a 401 this
+    re-runs the token exchange once and retries the request with the new token.
+    """
+
+    def __init__(self, user: str, pw: str) -> None:
+        self._user = user
+        self._pw = pw
+
+    def auth_flow(self, request):
+        global _token_cache
+        if _token_cache is None:
+            _token_cache = _exchange_jwt(self._user, self._pw)
+        if _token_cache:
+            request.headers["Authorization"] = f"Bearer {_token_cache}"
+
+        response = yield request
+        if response.status_code == 401:
+            _token_cache = _exchange_jwt(self._user, self._pw)
+            if _token_cache:
+                request.headers["Authorization"] = f"Bearer {_token_cache}"
+                yield request
+
+
+def _resolve_auth() -> tuple[dict[str, str], httpx.Auth | None]:
+    """Return (extra_headers, auth) based on env vars.
 
     Precedence: AIRFLOW_TOKEN > (username+password with AIRFLOW_AUTH_MODE) > no auth.
     """
@@ -128,7 +156,7 @@ def _resolve_auth() -> tuple[dict[str, str], httpx.BasicAuth | None]:
         _token_cache = _exchange_jwt(user, pw)
 
     if _token_cache:
-        return {"Authorization": f"Bearer {_token_cache}"}, None
+        return {}, _JwtAuth(user, pw)
 
     if mode == "jwt":
         raise RuntimeError(
@@ -140,13 +168,13 @@ def _resolve_auth() -> tuple[dict[str, str], httpx.BasicAuth | None]:
 
 
 def _client() -> httpx.Client:
-    extra_headers, basic = _resolve_auth()
+    extra_headers, auth = _resolve_auth()
     headers = {"Accept": "application/json"}
     headers.update(extra_headers)
     return httpx.Client(
         base_url=_base_url(),
         headers=headers,
-        auth=basic,
+        auth=auth,
         timeout=_timeout(),
         verify=_verify_ssl(),
     )
