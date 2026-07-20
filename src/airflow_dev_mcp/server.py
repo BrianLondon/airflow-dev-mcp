@@ -2,15 +2,15 @@
 
 Configure entirely via environment variables:
 
-    AIRFLOW_URL             Base URL, e.g. http://localhost:8081. Default: http://localhost:8080.
-    AIRFLOW_API_PREFIX      REST API path prefix. Default: /api/v2 (Airflow 3.x). Use /api/v1 for AF2.
-    AIRFLOW_USERNAME        Username (used with AIRFLOW_PASSWORD).
-    AIRFLOW_PASSWORD        Password.
-    AIRFLOW_TOKEN           Explicit bearer token; skips creds/JWT exchange.
-    AIRFLOW_AUTH_MODE       'auto' (default), 'jwt', or 'basic'.
-    AIRFLOW_TOKEN_ENDPOINT  Path to exchange creds for a JWT. Default: /auth/token.
-    AIRFLOW_TIMEOUT         HTTP timeout in seconds. Default: 30.
-    AIRFLOW_VERIFY_SSL      'false' to skip TLS verification. Default: true.
+    AIRFLOW_URL         Base URL, e.g. http://localhost:8081. Default: http://localhost:8080.
+    AIRFLOW_USERNAME    Username (used with AIRFLOW_PASSWORD).
+    AIRFLOW_PASSWORD    Password.
+    AIRFLOW_TIMEOUT     HTTP timeout in seconds. Default: 30.
+    AIRFLOW_VERIFY_SSL  'false' to skip TLS verification. Default: true.
+
+The Airflow version is auto-detected from the cluster (Airflow 3 -> /api/v2, Airflow 2 ->
+/api/v1), and auth follows from it: a JWT from /auth/token (refreshed automatically on
+expiry) for Airflow 3, HTTP basic auth for Airflow 2.
 """
 
 import json
@@ -57,17 +57,39 @@ task's configuration."""
 mcp = FastMCP("airflow-dev", instructions=_INSTRUCTIONS)
 
 _token_cache: str | None = None
+_api_prefix_cache: str | None = None
 
 
 def _base_url() -> str:
     return os.environ.get("AIRFLOW_URL", "http://localhost:8080").rstrip("/")
 
 
+def _detect_api_prefix() -> str:
+    """Probe the cluster to choose between Airflow 3 (/api/v2) and Airflow 2 (/api/v1).
+
+    `/version` is unauthenticated: an existing prefix returns non-404, a removed one
+    returns 404. Prefer v2; fall back to v2 if the cluster can't be reached.
+    """
+    for prefix in ("/api/v2", "/api/v1"):
+        try:
+            r = httpx.get(
+                f"{_base_url()}{prefix}/version",
+                timeout=_timeout(),
+                verify=_verify_ssl(),
+            )
+        except httpx.HTTPError:
+            break
+        if r.status_code != 404:
+            return prefix
+    return "/api/v2"
+
+
 def _api_prefix() -> str:
-    prefix = os.environ.get("AIRFLOW_API_PREFIX", "/api/v2").rstrip("/")
-    if not prefix.startswith("/"):
-        prefix = "/" + prefix
-    return prefix
+    """REST API path prefix, detected from the cluster once and cached for the process."""
+    global _api_prefix_cache
+    if _api_prefix_cache is None:
+        _api_prefix_cache = _detect_api_prefix()
+    return _api_prefix_cache
 
 
 def _timeout() -> float:
@@ -79,12 +101,9 @@ def _verify_ssl() -> bool:
 
 
 def _exchange_jwt(user: str, pw: str) -> str | None:
-    endpoint = os.environ.get("AIRFLOW_TOKEN_ENDPOINT", "/auth/token")
-    if not endpoint.startswith("/"):
-        endpoint = "/" + endpoint
     try:
         r = httpx.post(
-            f"{_base_url()}{endpoint}",
+            f"{_base_url()}/auth/token",
             json={"username": user, "password": pw},
             timeout=_timeout(),
             verify=_verify_ssl(),
@@ -130,51 +149,26 @@ class _JwtAuth(httpx.Auth):
                 yield request
 
 
-def _resolve_auth() -> tuple[dict[str, str], httpx.Auth | None]:
-    """Return (extra_headers, auth) based on env vars.
+def _resolve_auth() -> httpx.Auth | None:
+    """Build the auth mechanism from the credentials and the API version.
 
-    Precedence: AIRFLOW_TOKEN > (username+password with AIRFLOW_AUTH_MODE) > no auth.
+    Airflow 3 (/api/v2) authenticates with a JWT from /auth/token, refreshed on expiry;
+    Airflow 2 (/api/v1) uses HTTP basic auth. Returns None when no credentials are set.
     """
-    global _token_cache
-
-    if token := os.environ.get("AIRFLOW_TOKEN"):
-        return {"Authorization": f"Bearer {token}"}, None
-
     user = os.environ.get("AIRFLOW_USERNAME")
     pw = os.environ.get("AIRFLOW_PASSWORD")
     if not (user and pw):
-        return {}, None
-
-    mode = os.environ.get("AIRFLOW_AUTH_MODE", "auto").lower()
-    if mode not in ("auto", "jwt", "basic"):
-        raise RuntimeError(f"Unknown AIRFLOW_AUTH_MODE: {mode!r} (want auto|jwt|basic)")
-
-    if mode == "basic":
-        return {}, httpx.BasicAuth(user, pw)
-
-    if _token_cache is None:
-        _token_cache = _exchange_jwt(user, pw)
-
-    if _token_cache:
-        return {}, _JwtAuth(user, pw)
-
-    if mode == "jwt":
-        raise RuntimeError(
-            "JWT token exchange failed. Verify AIRFLOW_URL, credentials, and "
-            "AIRFLOW_TOKEN_ENDPOINT, or set AIRFLOW_AUTH_MODE=basic for AF2."
-        )
-
-    return {}, httpx.BasicAuth(user, pw)
+        return None
+    if _api_prefix().endswith("v1"):
+        return httpx.BasicAuth(user, pw)
+    return _JwtAuth(user, pw)
 
 
 def _client() -> httpx.Client:
-    extra_headers, auth = _resolve_auth()
-    headers = {"Accept": "application/json"}
-    headers.update(extra_headers)
     return httpx.Client(
         base_url=_base_url(),
-        headers=headers,
-        auth=auth,
+        headers={"Accept": "application/json"},
+        auth=_resolve_auth(),
         timeout=_timeout(),
         verify=_verify_ssl(),
     )

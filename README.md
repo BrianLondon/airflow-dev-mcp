@@ -89,23 +89,15 @@ All configuration is via environment variables:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `AIRFLOW_URL` | `http://localhost:8080` | Base URL of the cluster, no path. |
-| `AIRFLOW_API_PREFIX` | `/api/v2` | API path prefix. Use `/api/v1` for Airflow 2.x. |
 | `AIRFLOW_USERNAME` | — | Username. Used together with `AIRFLOW_PASSWORD`. |
 | `AIRFLOW_PASSWORD` | — | Password. |
-| `AIRFLOW_TOKEN` | — | Explicit bearer token; skips username/password entirely. |
-| `AIRFLOW_AUTH_MODE` | `auto` | `auto`, `jwt`, or `basic` (see below). |
-| `AIRFLOW_TOKEN_ENDPOINT` | `/auth/token` | Path used to exchange credentials for a JWT. |
 | `AIRFLOW_TIMEOUT` | `30` | HTTP timeout, in seconds. |
 | `AIRFLOW_VERIFY_SSL` | `true` | Set `false` to skip TLS verification (self-signed dev certs). |
 
 ### Authentication
 
-- **Airflow 3.x** (the default local/MWAA-style image): leave `AIRFLOW_AUTH_MODE=auto`.
-  The server posts your username/password to `/auth/token`, caches the returned JWT, and
-  sends it as a bearer token on every request.
-- **Airflow 2.x**: set `AIRFLOW_API_PREFIX=/api/v1` and `AIRFLOW_AUTH_MODE=basic` (2.x
-  uses HTTP basic auth against the REST API).
-- **Pre-issued token**: set `AIRFLOW_TOKEN` and omit the username/password.
+Just set `AIRFLOW_USERNAME` and `AIRFLOW_PASSWORD`. On first use the server detects whether
+it's talking to Airflow 3 or Airflow 2 and authenticates accordingly.
 
 ## Tools
 
