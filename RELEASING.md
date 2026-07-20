@@ -1,5 +1,20 @@
 # Releasing
 
+## Testing
+
+Run before cutting a release:
+
+```bash
+uv run pytest                                   # unit tests + coverage (fast, no Docker)
+uv run --group integration pytest -m integration  # boots real AF2 + AF3 clusters (needs Docker)
+```
+
+Unit tests run by default and in CI on every push/PR. Integration tests are deselected
+by default (they pull the `apache/airflow` images and boot two clusters); run them
+locally as above, or trigger the `integration` job manually from the Actions tab.
+
+## Publishing
+
 Releases publish to PyPI automatically via **Trusted Publishing** (OIDC) — no API
 token is stored in the repo or in GitHub secrets. The
 [`.github/workflows/publish.yml`](.github/workflows/publish.yml) workflow builds and
