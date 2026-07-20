@@ -244,10 +244,14 @@ def trigger_dag(
     body: dict[str, Any] = {}
     if conf is not None:
         body["conf"] = conf
-    if logical_date:
-        body["logical_date"] = logical_date
     if note:
         body["note"] = note
+    if logical_date is not None:
+        body["logical_date"] = logical_date
+    elif not _api_prefix().endswith("v1"):
+        # Airflow 3 requires logical_date to be present (null = "now"); Airflow 2
+        # rejects a null value, so omit it there and let the API default to now.
+        body["logical_date"] = None
 
     with _client() as c:
         resp = c.post(f"{_api_prefix()}/dags/{quote(dag_id, safe='')}/dagRuns", json=body)

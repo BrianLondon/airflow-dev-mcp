@@ -36,6 +36,24 @@ Homepage = "https://github.com/BrianLondon/airflow-dev-mcp"
 Repository = "https://github.com/BrianLondon/airflow-dev-mcp"
 Issues = "https://github.com/BrianLondon/airflow-dev-mcp/issues"
 
+[dependency-groups]
+dev = ["pytest>=8", "pytest-cov>=5"]
+integration = ["testcontainers>=4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not integration' --cov=airflow_dev_mcp --cov-report=term-missing"
+markers = [
+    "integration: requires Docker; boots real Airflow clusters (deselected by default)",
+]
+
+[tool.coverage.run]
+source = ["airflow_dev_mcp"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = ['if __name__ == "__main__":']
+
 [tool.hatch.version]
 path = "src/airflow_dev_mcp/__init__.py"
 
